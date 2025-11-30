@@ -5,18 +5,14 @@ from math import log
 from scipy.integrate import odeint
 import speech_recognition as sr  # STT
 import pyttsx3  # TTS (offline)
-import urllib.request  # For ethical crawling
-import urllib.robotparser  # robots.txt
 import time  # Throttling
-import threading  # For real-time crawling
-import re  # For ethical filters (PII avoidance)
 from transformers import AutoTokenizer, AutoModelForCausalLM  # LLM embedding
 import torch  # For LLM
 
 # Quantum Error Correction Imports (added for 2025 integration)
 import qiskit  # For quantum simulations and surface code
-from qiskit import QuantumCircuit, Aer, transpile
-from qiskit.providers.aer import AerSimulator
+from qiskit import QuantumCircuit, transpile
+from qiskit_aer import AerSimulator
 from qiskit.quantum_info import Statevector, Operator
 from qiskit.visualization import plot_histogram
 import matplotlib.pyplot as plt  # For coherence analysis plots
@@ -181,61 +177,7 @@ def perennial_morphogenic(t, omega=1, n_terms=5):
         fib.append(fib[-1] + fib[-2])
     return sum((fib[k] / np.math.factorial(k)) * np.exp(-1j * omega * t) for k in range(n_terms)).real
 
-# Enhanced Ethical Real-Time Crawler (2025 Best Practices)
-class EthicalCrawler:
-    def __init__(self, user_agent='SPI-Bot/1.0 (Ethical Crawler 2025)'):
-        self.user_agent = user_agent
-        self.opener = urllib.request.build_opener()
-        self.opener.addheaders = [('User-Agent', user_agent)]
-        self.pii_regex = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+.[A-Z|a-z]{2,}\b|\d{3}[-.]?\d{3}[-.]?\d{4}')
-        self.agents = [user_agent, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36']
 
-    def respects_robots(self, url):
-        rp = urllib.robotparser.RobotFileParser()
-        rp.set_url(urllib.request.urljoin(url, '/robots.txt'))
-        try:
-            rp.read()
-            return rp.can_fetch(self.user_agent, url)
-        except:
-            return True
-
-    def check_noindex(self, content):
-        return 'noindex' not in content.lower() and 'nofollow' not in content.lower()
-
-    def filter_content(self, content, keywords=None):
-        if not self.check_noindex(content):
-            return None
-        content = self.pii_regex.sub('[REDACTED]', content)
-        if keywords:
-            score = sum(1 for kw in keywords if kw.lower() in content.lower())
-            if score < len(keywords) / 2:
-                return None
-        return content
-
-    def crawl(self, url, delay=2, keywords=None):
-        if not self.respects_robots(url):
-            return "Blocked by robots.txt"
-        time.sleep(delay)
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': random.choice(self.agents)})
-            with urllib.request.urlopen(req) as response:
-                content = response.read().decode('utf-8')
-                filtered = self.filter_content(content, keywords)
-                return filtered if filtered else "Filtered: Noindex or low relevance"
-        except Exception as e:
-            return f"Error: {e}"
-
-    def start_real_time_monitor(self, urls, interval=300, keywords=None):
-        def monitor():
-            while True:
-                for url in urls:
-                    content = self.crawl(url, keywords=keywords)
-                    if content and "Error" not in content:
-                        print(f"Real-time pull: {len(content.split())} words from {url}")
-                time.sleep(interval)
-        thread = threading.Thread(target=monitor, daemon=True)
-        thread.start()
-        return thread
 
 # Full LLM Embedding (Phi-3-mini for 2025 lightweight perf)
 class LLMEmbed:
@@ -354,13 +296,11 @@ class SPIGUI:
         self.process_tab = ttk.Frame(self.notebook, style='TFrame')
         self.output_tab = ttk.Frame(self.notebook, style='TFrame')
         self.quantum_tab = ttk.Frame(self.notebook, style='TFrame')
-        self.crawl_tab = ttk.Frame(self.notebook, style='TFrame')
 
         self.notebook.add(self.intake_tab, text='Intake')
         self.notebook.add(self.process_tab, text='Process')
         self.notebook.add(self.output_tab, text='Output')
         self.notebook.add(self.quantum_tab, text='Quantum AI')
-        self.notebook.add(self.crawl_tab, text='Web Crawl')
 
         # Intake Tab
         ttk.Label(self.intake_tab, text="Speech/Text Intake", font=self.header_font).pack(pady=10)
@@ -400,17 +340,6 @@ class SPIGUI:
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.quantum_tab)
         self.canvas.get_tk_widget().pack(pady=5)
-
-        # Crawl Tab
-        ttk.Label(self.crawl_tab, text="Web Crawling", font=self.header_font).pack(pady=10)
-        self.url_entry = ttk.Entry(self.crawl_tab, width=50)
-        self.url_entry.insert(0, "https://example.com")
-        self.url_entry.pack(pady=5)
-        self.keywords_entry = ttk.Entry(self.crawl_tab, width=50)
-        self.keywords_entry.insert(0, "AI,quantum,2025")
-        self.keywords_entry.pack(pady=5)
-        self.crawl_button = ttk.Button(self.crawl_tab, text="Update via Crawl", command=self.run_crawl)
-        self.crawl_button.pack(pady=5)
 
     def start_speech(self):
         try:
@@ -458,12 +387,6 @@ class SPIGUI:
         self.quantum_output.delete('1.0', tk.END)
         self.quantum_output.insert(tk.END, status)
 
-    def run_crawl(self):
-        urls = [self.url_entry.get()]
-        keywords = self.keywords_entry.get().split(',')
-        self.spi.web_crawl_update(urls, keywords=keywords)
-        messagebox.showinfo("Success", "Crawling completed.")
-
     def run(self):
         self.root.mainloop()
 
@@ -477,12 +400,9 @@ class SPIPrototype:
         self.recognizer = sr.Recognizer()  # STT init
         self.tts_engine = pyttsx3.init()  # TTS init
         self.tts_engine.setProperty('rate', 150)  # Speed
-        self.crawler = EthicalCrawler()  # Enhanced crawler
         self.llm = LLMEmbed()  # Full LLM
         # New: Quantum Error Correction AI
         self.quantum_ai = QuantumErrorCorrectionAI(self, num_qubits=20, surface_code_distance=5)
-        # Start real-time crawling (e.g., on example.com, keywords for relevance)
-        self.crawler.start_real_time_monitor(["https://example.com"], keywords=["AI", "2025", "quantum"])
         # GUI
         self.gui = SPIGUI(self)
 
@@ -512,20 +432,7 @@ class SPIPrototype:
         self.core_field[:len(input_data)] = input_data * np.mean(vibes, axis=0)[:len(input_data)]
         return self.core_field
 
-    def web_crawl_update(self, urls, keywords=None):  # Now uses enhanced crawl
-        new_data = []
-        for url in urls:
-            content = self.crawler.crawl(url, keywords=keywords)
-            if content and "Error" not in content and "Filtered" not in content:
-                words = len(content.split())
-                new_data.append(words)
-                summary_prompt = f"Summarize relevance to SPI and quantum AI: {content[:500]}"
-                relevance = self.llm.generate(summary_prompt, max_length=50)
-                print(f"LLM relevance: {relevance}")
-        fib_growth = [0,1,1,2,3,5][-1]
-        self.core_field *= (1 + 0.1 * fib_growth)
-        self.core_field[-len(new_data):] += np.array(new_data)
-        print(f"Knowledge updated: {len(new_data)} sources, growth ~{fib_growth}")
+
 
     def mode2_process(self, variance_threshold=5):
         var = np.var(self.core_field)
