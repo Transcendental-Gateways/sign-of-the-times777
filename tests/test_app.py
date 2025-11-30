@@ -7,6 +7,8 @@ import json
 import sys
 import os
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app import app, QuantumInspiredOptimizer, OBJECTIVE_FUNCTIONS
@@ -186,25 +188,21 @@ class TestObjectiveFunctions:
     
     def test_quadratic_at_origin(self):
         """Test quadratic function is zero at origin."""
-        import numpy as np
         result = OBJECTIVE_FUNCTIONS['quadratic'](np.array([0.0, 0.0]))
         assert result == 0.0
     
     def test_rosenbrock_at_minimum(self):
         """Test Rosenbrock function at known minimum."""
-        import numpy as np
         result = OBJECTIVE_FUNCTIONS['rosenbrock'](np.array([1.0, 1.0]))
         assert abs(result) < 1e-10
     
     def test_rastrigin_at_origin(self):
         """Test Rastrigin function at origin."""
-        import numpy as np
         result = OBJECTIVE_FUNCTIONS['rastrigin'](np.array([0.0, 0.0]))
         assert abs(result) < 1e-10
     
     def test_ackley_at_origin(self):
         """Test Ackley function at origin."""
-        import numpy as np
         result = OBJECTIVE_FUNCTIONS['ackley'](np.array([0.0, 0.0]))
         assert abs(result) < 1e-10
 

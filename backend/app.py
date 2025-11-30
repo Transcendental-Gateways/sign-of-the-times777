@@ -79,11 +79,17 @@ class QuantumInspiredOptimizer:
         }
 
 
+def rosenbrock_function(x):
+    """Rosenbrock function - classic optimization benchmark."""
+    if len(x) > 1:
+        return sum(100 * (x[i+1] - x[i]**2)**2 + (1 - x[i])**2 for i in range(len(x) - 1))
+    return x[0]**2
+
+
 # Predefined objective functions for demo purposes
 OBJECTIVE_FUNCTIONS = {
     "quadratic": lambda x: np.sum(x ** 2),
-    "rosenbrock": lambda x: sum(100 * (x[i+1] - x[i]**2)**2 + (1 - x[i])**2 
-                                for i in range(len(x) - 1)) if len(x) > 1 else x[0]**2,
+    "rosenbrock": rosenbrock_function,
     "rastrigin": lambda x: 10 * len(x) + sum(xi**2 - 10 * np.cos(2 * np.pi * xi) for xi in x),
     "ackley": lambda x: -20 * np.exp(-0.2 * np.sqrt(np.mean(x**2))) 
                         - np.exp(np.mean(np.cos(2 * np.pi * x))) + 20 + np.e
@@ -245,4 +251,6 @@ def compare_methods():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    import os
+    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode)

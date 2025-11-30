@@ -30,6 +30,11 @@ pip install -r requirements.txt
 python app.py
 ```
 
+For development with debug mode enabled:
+```bash
+FLASK_DEBUG=true python app.py
+```
+
 3. Open `frontend/index.html` in your browser or serve it with any static file server.
 
 ### Running with Docker
