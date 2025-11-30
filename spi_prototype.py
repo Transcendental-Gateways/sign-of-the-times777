@@ -6,6 +6,7 @@ from scipy.integrate import odeint
 import speech_recognition as sr  # STT
 import pyttsx3  # TTS (offline)
 import urllib.request  # For ethical crawling
+import urllib.parse  # For URL handling
 import urllib.robotparser  # robots.txt
 import time  # Throttling
 import threading  # For real-time crawling
@@ -89,11 +90,28 @@ N_GENOMES = 8
 MAX_RETRIES = 20
 
 def safe_eval(expr):
+    """Safely evaluate arithmetic expressions with only allowed operators and variables."""
     try:
         e = expr.replace('/', '//')
         for v, val in VAR_MAP.items():
             e = e.replace(v, str(val))
-        return eval(e)
+        # Validate expression contains only allowed characters
+        allowed_chars = set('0123456789+-*/() ')
+        if not all(c in allowed_chars for c in e):
+            return 1
+        import ast
+        # Parse and evaluate using ast for safety
+        tree = ast.parse(e, mode='eval')
+        # Validate AST only contains safe nodes
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Num)):
+                continue
+            elif isinstance(node, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.USub, ast.UAdd)):
+                continue
+            else:
+                return 1
+        result = eval(compile(tree, '<expr>', 'eval'), {"__builtins__": {}})
+        return result if isinstance(result, (int, float)) else 1
     except:
         return 1
 
@@ -188,12 +206,12 @@ class EthicalCrawler:
         self.user_agent = user_agent
         self.opener = urllib.request.build_opener()
         self.opener.addheaders = [('User-Agent', user_agent)]
-        self.pii_regex = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+.[A-Z|a-z]{2,}\b|\d{3}[-.]?\d{3}[-.]?\d{4}')
+        self.pii_regex = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b|\d{3}[-.]?\d{3}[-.]?\d{4}')
         self.agents = [user_agent, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36']
 
     def respects_robots(self, url):
         rp = urllib.robotparser.RobotFileParser()
-        rp.set_url(urllib.request.urljoin(url, '/robots.txt'))
+        rp.set_url(urllib.parse.urljoin(url, '/robots.txt'))
         try:
             rp.read()
             return rp.can_fetch(self.user_agent, url)
@@ -580,4 +598,4 @@ class SPIPrototype:
 if __name__ == "__main__":
     random.seed(42)
     spi = SPIPrototype()
-    spi.gui.run()  # Launch GUI build this
+    spi.gui.run()  # Launch GUI
