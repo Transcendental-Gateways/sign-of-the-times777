@@ -13,6 +13,10 @@ from datetime import datetime
 from collections import deque
 import threading
 import time
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # CORE SNN MODULES
@@ -148,7 +152,16 @@ def syntropy_field(phi_0, t, lambda_damp=0.2):
     """Temporal coherence for smooth motor transitions"""
     def dphi_dt(phi, t):
         return -lambda_damp * phi + np.random.normal(0, 0.1, len(phi))
-    return odeint(dphi_dt, phi_0, t)
+    try:
+        # Use method='lsoda' with relaxed tolerances to avoid warnings
+        return odeint(dphi_dt, phi_0, t, rtol=1e-3, atol=1e-6)
+    except Exception as e:
+        logger.warning(f"ODE integration warning: {e}")
+        # Fallback to simple exponential decay
+        result = np.zeros((len(t), len(phi_0)))
+        for i, ti in enumerate(t):
+            result[i] = phi_0 * np.exp(-lambda_damp * ti)
+        return result
 
 def perennial_morphogenic(t, omega=2, n_terms=5):
     """Cyclical behavior patterns (patrol, search, etc.)"""
@@ -201,21 +214,30 @@ class RobotBrain:
     
     def perceive(self, sensor_data):
         """Process sensory input through SNN with synaptic trace decoding"""
-        # Sensor fusion with continuous trace signals
-        perception = self.sensor_fusion.process_sensors(sensor_data)
-        
-        # Use continuous trace values for smoother field updates
-        trace_signals = np.array(perception.get('trace_values', sensor_data[:3]))
-        
-        # Update syntropic field with sensor harmonics (using decoded traces)
-        vibes = np.array([np.sin(omega * np.arange(len(trace_signals)) + phi) 
-                         for omega, phi in zip([1, 2, 3], [0, np.pi/2, np.pi])])
-        self.syntropic_field[:len(trace_signals)] = trace_signals * np.mean(vibes, axis=0)[:len(trace_signals)]
-        
-        # Lorenz dynamics for adaptive response (using continuous signals)
-        t = np.linspace(0, 1, 10)
-        initial = [perception['confidence'], perception['cluster'], np.mean(trace_signals)]
-        chaos = odeint(lorenz_system, initial, t)
+        try:
+            # Validate sensor data
+            if sensor_data is None or len(sensor_data) == 0:
+                logger.error("Invalid sensor data received")
+                return self._get_default_perception()
+            
+            # Sensor fusion with continuous trace signals
+            perception = self.sensor_fusion.process_sensors(sensor_data)
+            
+            # Use continuous trace values for smoother field updates
+            trace_signals = np.array(perception.get('trace_values', sensor_data[:3]))
+            
+            # Update syntropic field with sensor harmonics (using decoded traces)
+            vibes = np.array([np.sin(omega * np.arange(len(trace_signals)) + phi) 
+                             for omega, phi in zip([1, 2, 3], [0, np.pi/2, np.pi])])
+            self.syntropic_field[:len(trace_signals)] = trace_signals * np.mean(vibes, axis=0)[:len(trace_signals)]
+            
+            # Lorenz dynamics for adaptive response (using continuous signals)
+            t = np.linspace(0, 1, 10)
+            initial = [perception['confidence'], perception['cluster'], np.mean(trace_signals)]
+            chaos = odeint(lorenz_system, initial, t, rtol=1e-3, atol=1e-6)
+        except Exception as e:
+            logger.error(f"Perception error: {e}")
+            return self._get_default_perception()
         
         return {
             'perception': perception,
@@ -225,12 +247,30 @@ class RobotBrain:
             'trace_signals': trace_signals.tolist()  # Smooth continuous signals
         }
     
+    def _get_default_perception(self):
+        """Return safe default perception when sensors fail"""
+        return {
+            'perception': {'confidence': 0.0, 'cluster': 0, 'trace_values': [0, 0, 0]},
+            'field_energy': 0.0,
+            'chaos_trajectory': [0.0, 0.0, 0.0],
+            'threat_level': 1.0,  # Maximum threat for safety
+            'trace_signals': [0.0, 0.0, 0.0]
+        }
+    
     def think(self, perception):
         """High-level decision making through morphogenic evolution"""
-        self.decision_buffer.append(perception)
-        
-        # Evolve behavior based on recent perceptions
-        threat_avg = np.mean([p.get('threat_level', 0) for p in self.decision_buffer])
+        try:
+            if perception is None:
+                logger.warning("Null perception in think()")
+                return {'decision': 'emergency_stop', 'motor_command': {'left_motor': 0, 'right_motor': 0}}
+            
+            self.decision_buffer.append(perception)
+            
+            # Evolve behavior based on recent perceptions
+            threat_avg = np.mean([p.get('threat_level', 0) for p in self.decision_buffer])
+        except Exception as e:
+            logger.error(f"Decision making error: {e}")
+            return {'decision': 'emergency_stop', 'motor_command': {'left_motor': 0, 'right_motor': 0}}
         
         # Select behavior from evolved library
         if threat_avg > 0.6:
@@ -259,14 +299,22 @@ class RobotBrain:
     
     def act(self, decision, motor_mode='differential'):
         """Execute motor commands through PID control"""
-        actions = {
-            'avoid_obstacle': {'left': -50, 'right': 50},  # Turn right
-            'explore': {'left': 70, 'right': 70},          # Move forward
-            'navigate_careful': {'left': 40, 'right': 40}, # Slow forward
-            'stop': {'left': 0, 'right': 0}
-        }
-        
-        target = actions.get(decision['decision'], {'left': 0, 'right': 0})
+        try:
+            if decision is None:
+                logger.error("Null decision in act()")
+                return {'left_motor': 0, 'right_motor': 0, 'mode': motor_mode, 'timestamp': time.time()}
+            
+            actions = {
+                'avoid_obstacle': {'left': -50, 'right': 50},  # Turn right
+                'explore': {'left': 70, 'right': 70},          # Move forward
+                'navigate_careful': {'left': 40, 'right': 40}, # Slow forward
+                'stop': {'left': 0, 'right': 0}
+            }
+            
+            target = actions.get(decision['decision'], {'left': 0, 'right': 0})
+        except Exception as e:
+            logger.error(f"Action execution error: {e}")
+            return {'left_motor': 0, 'right_motor': 0, 'mode': motor_mode, 'timestamp': time.time()}
         
         # PID control for smooth motor actuation
         left_cmd = self.motor_left.control(target['left'])
@@ -288,29 +336,55 @@ class RobotBrain:
         return motor_output
     
     def brain_loop(self, sensor_callback, motor_callback, hz=10):
-        """Real-time brain processing loop"""
+        """Real-time brain processing loop with error recovery"""
         dt = 1.0 / hz
+        error_count = 0
+        max_errors = 10
         
         print(f"🧠 Brain loop started at {hz}Hz")
         
         while self.running:
-            loop_start = time.time()
-            
-            # Perception
-            sensor_data = sensor_callback()
-            perception = self.perceive(sensor_data)
-            
-            # Cognition
-            decision = self.think(perception)
-            
-            # Action
-            motor_cmd = self.act(decision)
-            motor_callback(motor_cmd)
-            
-            # Maintain loop timing
-            elapsed = time.time() - loop_start
-            if elapsed < dt:
-                time.sleep(dt - elapsed)
+            try:
+                loop_start = time.time()
+                
+                # Perception
+                sensor_data = sensor_callback()
+                perception = self.perceive(sensor_data)
+                
+                # Cognition
+                decision = self.think(perception)
+                
+                # Action
+                motor_cmd = self.act(decision)
+                motor_callback(motor_cmd)
+                
+                # Reset error count on success
+                error_count = 0
+                
+                # Maintain loop timing
+                elapsed = time.time() - loop_start
+                if elapsed < dt:
+                    time.sleep(dt - elapsed)
+                    
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Brain loop error ({error_count}/{max_errors}): {e}")
+                
+                # Emergency stop on repeated errors
+                if error_count >= max_errors:
+                    logger.critical("Too many errors, initiating emergency stop")
+                    motor_callback({'left_motor': 0, 'right_motor': 0})
+                    self.running = False
+                    break
+                
+                # Try to continue with safe defaults
+                try:
+                    motor_callback({'left_motor': 0, 'right_motor': 0})
+                except:
+                    pass
+                
+                time.sleep(dt)
+                continue
         
         print("🛑 Brain loop stopped")
     

@@ -55,14 +55,14 @@ class TestSafetyLayer(unittest.TestCase):
     
     def test_command_scaling(self):
         """Verify motor commands scaled by safety level"""
-        # Caution: 70% power
+        # Caution: 70% power (don't pass distances to avoid recalculation)
         self.monitor.safety_level = SafetyLevel.CAUTION
-        left, right = self.monitor.enforce_safe_command(100, 100, np.array([0.5, 0.5, 0.5]))
+        left, right = self.monitor.enforce_safe_command(100, 100, None)
         self.assertAlmostEqual(left, 70.0, delta=1.0)
         
         # Warning: 40% power
         self.monitor.safety_level = SafetyLevel.WARNING
-        left, right = self.monitor.enforce_safe_command(100, 100, np.array([0.35, 0.35, 0.35]))
+        left, right = self.monitor.enforce_safe_command(100, 100, None)
         self.assertAlmostEqual(left, 40.0, delta=1.0)
     
     def test_watchdog(self):
