@@ -1,4 +1,7 @@
 """
+© 2026 Transcendental Gateways. All rights reserved.
+Use of this software is governed by the LICENSE-RESEARCH.md file.
+
 SPINN Robot Brain - Safety Layer
 Verifiable constraints for companion robot compliance
 """

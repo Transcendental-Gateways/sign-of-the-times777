@@ -1,4 +1,7 @@
 """
+© 2026 Transcendental Gateways. All rights reserved.
+Use of this software is governed by the LICENSE-RESEARCH.md file.
+
 SPINN Robot Brain Web API
 Real-time control interface for robot brain operations
 """

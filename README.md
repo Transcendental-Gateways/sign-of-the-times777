@@ -97,9 +97,16 @@ All 20 tests passing:
    - 1.0s timeout detection
    - Automatic emergency stop on communication loss
 
-## License
+## Licensing
 
-Research and educational use.
+This project is released under a **Research and Evaluation License**.
+
+- ✅ **Permitted**: Research, evaluation, and non-commercial use
+- ❌ **Prohibited**: Commercial use, deployment in physical systems, or redistribution without permission
+
+**Contact for commercial licensing**: anthony.castro@axiomzetainnovations.org
+
+See [LICENSE-RESEARCH.md](LICENSE-RESEARCH.md) for complete terms.
 
 ## Status
 

@@ -1,4 +1,7 @@
 """
+© 2026 Transcendental Gateways. All rights reserved.
+Use of this software is governed by the LICENSE-RESEARCH.md file.
+
 SPINN Robot Brain - Syntropic Perennial Intelligence Neural Network
 Reconfigured for autonomous robot control and decision making
 """
@@ -183,6 +186,7 @@ class RobotBrain:
         # Core neural substrate
         self.syntropic_field = np.zeros(100)
         self.morphogenic_memory = np.zeros(50)
+        self.morphogenic_phase_time = 0.0  # Accumulating phase for temporal evolution
         
         # Control systems
         self.motor_left = PIDController(Kp=2.0, Ki=0.3, Kd=0.1)
@@ -206,9 +210,20 @@ class RobotBrain:
         self.decision_buffer = deque(maxlen=10)
         self.action_history = deque(maxlen=50)
         
+        # Counters for total operations
+        self.total_actions = 0
+        self.total_decisions = 0
+        self.total_loops = 0
+        self.morphogenic_history = []  # Track phase evolution
+        
         # Real-time loop
         self.running = False
         self.brain_thread = None
+        
+        # Timestamp tracking
+        self.last_t0 = None
+        self.last_t_action = None
+        self.last_t1 = None
         
         print("✓ Robot Brain online")
     
@@ -285,10 +300,21 @@ class RobotBrain:
         
         self.current_behavior = self.behavior_library[behavior_idx]
         
-        # Apply perennial morphogenic field for temporal coherence
-        t = np.linspace(0, 1, 20)
+        # Apply perennial morphogenic field for temporal coherence with evolving phase
+        self.morphogenic_phase_time += 0.1  # Increment phase time
+        t = np.linspace(self.morphogenic_phase_time, self.morphogenic_phase_time + 1, 20)
         morph_signal = perennial_morphogenic(t, omega=2)
         self.morphogenic_memory = morph_signal[:50]
+        
+        # Record morphogenic phase for tracking
+        current_phase = float(np.mean(self.morphogenic_memory))
+        if len(self.morphogenic_history) < 100:  # Keep last 100 samples
+            self.morphogenic_history.append(current_phase)
+        else:
+            self.morphogenic_history.pop(0)
+            self.morphogenic_history.append(current_phase)
+        
+        self.total_decisions += 1
         
         return {
             'decision': decision,
@@ -332,6 +358,7 @@ class RobotBrain:
         }
         
         self.action_history.append(motor_output)
+        self.total_actions += 1
         
         return motor_output
     
@@ -345,7 +372,8 @@ class RobotBrain:
         
         while self.running:
             try:
-                loop_start = time.time()
+                t0 = time.time()  # Loop start time
+                self.last_t0 = t0
                 
                 # Perception
                 sensor_data = sensor_callback()
@@ -355,14 +383,22 @@ class RobotBrain:
                 decision = self.think(perception)
                 
                 # Action
+                t_action = time.time()  # Time right before action
+                self.last_t_action = t_action
                 motor_cmd = self.act(decision)
                 motor_callback(motor_cmd)
+                
+                t1 = time.time()  # Loop end time
+                self.last_t1 = t1
+                
+                # Increment loop counter
+                self.total_loops += 1
                 
                 # Reset error count on success
                 error_count = 0
                 
                 # Maintain loop timing
-                elapsed = time.time() - loop_start
+                elapsed = t1 - t0
                 if elapsed < dt:
                     time.sleep(dt - elapsed)
                     
@@ -412,7 +448,12 @@ class RobotBrain:
             'field_coherence': float(np.var(self.syntropic_field)),
             'morphogenic_phase': float(np.mean(self.morphogenic_memory)),
             'decisions_queued': len(self.decision_buffer),
-            'actions_taken': len(self.action_history)
+            'actions_taken': self.total_actions,
+            'decisions_made': self.total_decisions,
+            'total_loops': self.total_loops,
+            'last_t0': self.last_t0,
+            'last_t_action': self.last_t_action,
+            'last_t1': self.last_t1
         }
 
 # ============================================================================
@@ -471,13 +512,15 @@ class RobotSimulator:
 def test_robot_brain():
     """Test robot brain in simulation"""
     print("=" * 60)
-    print("SPINN ROBOT BRAIN TEST")
+    print("SPINN ROBOT BRAIN TEST - 5 MINUTE RUN")
     print("=" * 60)
     
     brain = RobotBrain()
     sim = RobotSimulator()
     
-    print("\n🎮 Running simulation for 5 seconds...")
+    print("\n🎮 Running simulation for 5 minutes...")
+    
+    start_time = time.time()
     
     brain.start(
         sensor_callback=lambda: sim.get_sensors(),
@@ -485,17 +528,53 @@ def test_robot_brain():
         hz=10
     )
     
-    time.sleep(5)
+    time.sleep(300)  # 5 minutes
     
     brain.stop()
+    
+    elapsed_time = time.time() - start_time
     
     print("\n📊 Final Status:")
     status = brain.get_status()
     for key, value in status.items():
-        print(f"  {key}: {value}")
+        if key != 'morphogenic_history':  # Skip history array in main display
+            print(f"  {key}: {value}")
+    
+    # Show morphogenic phase evolution
+    morph_history = brain.morphogenic_history
+    if len(morph_history) > 0:
+        print(f"\n🌀 Morphogenic Phase Evolution:")
+        print(f"  Initial: {morph_history[0]:.6f}")
+        print(f"  Final: {morph_history[-1]:.6f}")
+        print(f"  Range: [{min(morph_history):.6f}, {max(morph_history):.6f}]")
+        print(f"  Mean: {np.mean(morph_history):.6f}")
+        print(f"  Std Dev: {np.std(morph_history):.6f}")
     
     print(f"\n📍 Final Position: ({sim.position[0]:.2f}, {sim.position[1]:.2f})")
     print(f"📐 Final Orientation: {np.degrees(sim.orientation):.1f}°")
+    
+    print(f"\n⏱️  Performance Metrics:")
+    print(f"  Runtime: {elapsed_time:.2f} seconds")
+    print(f"  Total Loops: {status.get('total_loops', 0)}")
+    print(f"  Loop Frequency: {status.get('total_loops', 0) / elapsed_time:.2f} Hz")
+    print(f"  Total Actions: {status.get('actions_taken', 0)}")
+    print(f"  Action Throughput: {status.get('actions_taken', 0) / elapsed_time:.2f} actions/sec")
+    print(f"  Total Decisions: {status.get('decisions_made', 0)}")
+    print(f"  Decision Rate: {status.get('decisions_made', 0) / elapsed_time:.2f} decisions/sec")
+    
+    print(f"\n🕐 Last Loop Timestamps:")
+    if status.get('last_t0') and status.get('last_t_action') and status.get('last_t1'):
+        t0 = status['last_t0']
+        t_action = status['last_t_action']
+        t1 = status['last_t1']
+        print(f"  Loop start (t0): {t0:.6f}")
+        print(f"  Before action (t_action): {t_action:.6f}")
+        print(f"  Loop end (t1): {t1:.6f}")
+        print(f"  Perception+Cognition time: {(t_action - t0)*1000:.3f} ms")
+        print(f"  Action time: {(t1 - t_action)*1000:.3f} ms")
+        print(f"  Total loop time: {(t1 - t0)*1000:.3f} ms")
+    else:
+        print("  No timestamp data available")
     
     print("\n✅ Test complete!")
 

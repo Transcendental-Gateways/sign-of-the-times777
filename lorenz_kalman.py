@@ -1,4 +1,7 @@
 """
+© 2026 Transcendental Gateways. All rights reserved.
+Use of this software is governed by the LICENSE-RESEARCH.md file.
+
 Lorenz-Enhanced Kalman Filter
 Advanced sensor fusion with chaos-based outlier rejection
 """
