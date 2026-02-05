@@ -29,6 +29,94 @@
             font-size: 2.5em;
             text-shadow: 0 0 10px #0f0;
         }
+
+        .health-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
+            background: #020402;
+            border: 2px solid #0f0;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
+        }
+
+        .health-title {
+            color: #0ff;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+
+        .health-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            font-size: 13px;
+        }
+
+        .health-item {
+            padding: 4px 8px;
+            border: 1px solid #0f0;
+            border-radius: 3px;
+            background: #000;
+        }
+
+        .health-item.warn {
+            border-color: #ff0;
+            color: #ff0;
+        }
+
+        .health-item.crit {
+            border-color: #f00;
+            color: #f00;
+        }
+
+        .indicator-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
+            background: #030503;
+            border: 2px solid #0ff;
+            padding: 10px 16px;
+            margin-top: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.15);
+        }
+
+        .indicator-title {
+            color: #0ff;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+
+        .indicator-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            font-size: 13px;
+        }
+
+        .indicator-item {
+            padding: 4px 8px;
+            border: 1px solid #0ff;
+            border-radius: 3px;
+            background: #000;
+        }
+
+        .indicator-item.warn {
+            border-color: #ff0;
+            color: #ff0;
+        }
+
+        .indicator-item.crit {
+            border-color: #f00;
+            color: #f00;
+        }
         
         .grid {
             display: grid;
@@ -200,6 +288,17 @@
 <body>
     <div class="container">
         <h1>🤖 SPINN ROBOT BRAIN 🧠</h1>
+
+        <div class="health-strip">
+            <div class="health-title">SYSTEM HEALTH SUMMARY</div>
+            <div class="health-items">
+                <div class="health-item" id="healthLoop">Loop: 0.00 Hz</div>
+                <div class="health-item" id="healthThroughput">Throughput: 0.00 /s</div>
+                <div class="health-item" id="healthSafety">Safety: UNKNOWN</div>
+                <div class="health-item" id="healthKalman">Kalman: UNSTABLE</div>
+                <div class="health-item" id="healthEstop">E-Stop: -</div>
+            </div>
+        </div>
         
         <div class="controls">
             <button onclick="initRobot()">Initialize Brain</button>
@@ -433,6 +532,15 @@
                 <div class="log" id="systemLog"></div>
             </div>
         </div>
+
+        <div class="indicator-strip">
+            <div class="indicator-title">DERIVED INDICATORS</div>
+            <div class="indicator-items">
+                <div class="indicator-item" id="perfIndicator">Performance: 0</div>
+                <div class="indicator-item" id="safetyIndicator">Safety Index: 0</div>
+                <div class="indicator-item" id="estimationIndicator">Estimation: 0</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -523,6 +631,60 @@
                 document.getElementById('decisionsValue').textContent = data.brain.decisions_queued;
                 document.getElementById('loopFreqValue').textContent = (data.brain.loop_frequency_hz || 0).toFixed(2) + ' Hz';
                 document.getElementById('throughputValue').textContent = (data.brain.throughput_rate || 0).toFixed(2) + ' /s';
+
+                // System health summary
+                const loopHz = data.brain.loop_frequency_hz || 0;
+                const throughput = data.brain.throughput_rate || 0;
+                const safetyLevel = data.safety_metrics?.safety_level || 'UNKNOWN';
+                const watchdogOk = data.safety_metrics?.watchdog_ok;
+                const estopMs = data.safety_metrics?.estop_response_ms;
+                const stabilityScore = data.kalman_metrics?.stability_score || 0;
+
+                const healthLoop = document.getElementById('healthLoop');
+                const healthThroughput = document.getElementById('healthThroughput');
+                const healthSafety = document.getElementById('healthSafety');
+                const healthKalman = document.getElementById('healthKalman');
+                const healthEstop = document.getElementById('healthEstop');
+
+                healthLoop.textContent = `Loop: ${loopHz.toFixed(2)} Hz`;
+                healthThroughput.textContent = `Throughput: ${throughput.toFixed(2)} /s`;
+                healthSafety.textContent = `Safety: ${safetyLevel}`;
+                healthKalman.textContent = `Kalman: ${stabilityScore >= 0.5 ? 'STABLE' : 'UNSTABLE'}`;
+                healthEstop.textContent = `E-Stop: ${estopMs !== null && estopMs !== undefined ? estopMs.toFixed(2) + ' ms' : '-'}`;
+
+                healthLoop.classList.toggle('warn', loopHz > 0 && loopHz < 5);
+                healthLoop.classList.toggle('crit', loopHz === 0);
+                healthThroughput.classList.toggle('warn', throughput > 0 && throughput < 2);
+                healthThroughput.classList.toggle('crit', throughput === 0);
+                const safetyWarn = ['CAUTION', 'WARNING'].includes(safetyLevel);
+                const safetyCrit = ['CRITICAL', 'EMERGENCY'].includes(safetyLevel) || watchdogOk === false;
+                healthSafety.classList.toggle('warn', safetyWarn);
+                healthSafety.classList.toggle('crit', safetyCrit);
+                healthKalman.classList.toggle('warn', stabilityScore > 0 && stabilityScore < 0.5);
+                healthKalman.classList.toggle('crit', stabilityScore === 0);
+                healthEstop.classList.toggle('warn', estopMs !== null && estopMs !== undefined && estopMs > 100);
+
+                // Derived indicators
+                const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+                const perfIndex = clamp(((loopHz / 10) * 0.6 + (throughput / 10) * 0.4) * 100, 0, 100);
+                const safetyIndexBase = safetyCrit ? 10 : safetyWarn ? 50 : 90;
+                const safetyIndex = clamp(safetyIndexBase - (watchdogOk === false ? 20 : 0), 0, 100);
+                const estimationIndex = clamp(stabilityScore * 100, 0, 100);
+
+                const perfIndicator = document.getElementById('perfIndicator');
+                const safetyIndicator = document.getElementById('safetyIndicator');
+                const estimationIndicator = document.getElementById('estimationIndicator');
+
+                perfIndicator.textContent = `Performance: ${perfIndex.toFixed(0)}`;
+                safetyIndicator.textContent = `Safety Index: ${safetyIndex.toFixed(0)}`;
+                estimationIndicator.textContent = `Estimation: ${estimationIndex.toFixed(0)}`;
+
+                perfIndicator.classList.toggle('warn', perfIndex > 0 && perfIndex < 50);
+                perfIndicator.classList.toggle('crit', perfIndex === 0);
+                safetyIndicator.classList.toggle('warn', safetyIndex > 0 && safetyIndex < 60);
+                safetyIndicator.classList.toggle('crit', safetyIndex === 0 || safetyCrit);
+                estimationIndicator.classList.toggle('warn', estimationIndex > 0 && estimationIndex < 50);
+                estimationIndicator.classList.toggle('crit', estimationIndex === 0);
                 
                 // Update position
                 document.getElementById('posXValue').textContent = data.position.x.toFixed(2);
