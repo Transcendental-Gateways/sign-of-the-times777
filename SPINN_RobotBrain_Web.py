@@ -162,6 +162,7 @@ def get_status():
     # Get safety metrics
     if safety_monitor:
         safety_status = safety_monitor.get_status()
+        estop_response_ms = safety_monitor.simulate_emergency_stop_response()
         safety_metrics = {
             'safety_level': safety_status['safety_level'],
             'motor_left': last_action.get('left_motor', 0.0) if last_action else 0.0,
@@ -170,7 +171,10 @@ def get_status():
             'min_obstacle': float(np.min(sensors)),
             'watchdog_ok': safety_status['watchdog_ok'],
             'emergency_stop': safety_status['emergency_stop'],
-            'failure_count': len(safety_status['active_failures'])
+            'failure_count': len(safety_status['active_failures']),
+            'safety_transitions': safety_status.get('safety_transitions', 0),
+            'last_transition': safety_status.get('last_transition'),
+            'estop_response_ms': float(estop_response_ms) if estop_response_ms is not None else None
         }
     else:
         safety_metrics = {
@@ -181,13 +185,20 @@ def get_status():
             'min_obstacle': 0.0,
             'watchdog_ok': True,
             'emergency_stop': False,
-            'failure_count': 0
+            'failure_count': 0,
+            'safety_transitions': 0,
+            'last_transition': None,
+            'estop_response_ms': None
         }
     
     # Get Kalman filter metrics with SNN optimization
     if kalman_filter:
         kalman_state = kalman_filter.get_state()
         snn_opt = kalman_filter.get_snn_optimization_metrics()
+        pos_unc = kalman_filter.get_position_uncertainty()
+        vel_unc = kalman_filter.get_velocity_uncertainty()
+        chaos_ratio = snn_opt['chaos_to_order_ratio']
+        stability_score = float(np.exp(-(pos_unc + vel_unc + abs(chaos_ratio - 1.0))))
         kalman_metrics = {
             'estimated_pos_x': float(kalman_state[0]),
             'estimated_pos_y': float(kalman_state[1]),
@@ -199,8 +210,9 @@ def get_status():
             'lorenz_magnitude': float(np.linalg.norm(kalman_filter.lorenz_state)),
             'snn_spike_trace': snn_opt['spike_trace'],
             'snn_current_rho': snn_opt['current_rho'],
-            'snn_stabilization_active': snn_opt['stabilization_active'],
-            'chaos_to_order_ratio': snn_opt['chaos_to_order_ratio']
+            'snn_stabilization_active': bool(snn_opt['stabilization_active']),
+            'chaos_to_order_ratio': snn_opt['chaos_to_order_ratio'],
+            'stability_score': stability_score
         }
     else:
         kalman_metrics = {
@@ -215,7 +227,8 @@ def get_status():
             'snn_spike_trace': 0.0,
             'snn_current_rho': 28.0,
             'snn_stabilization_active': False,
-            'chaos_to_order_ratio': 1.0
+            'chaos_to_order_ratio': 1.0,
+            'stability_score': 0.0
         }
     
     return jsonify({

@@ -84,6 +84,7 @@ class SafetyMonitor:
     def __init__(self, constraints: SafetyConstraints):
         self.constraints = constraints
         self.safety_level = SafetyLevel.NOMINAL
+        self.last_safety_level = self.safety_level
         self.active_failures: List[FailureMode] = []
         self.emergency_stop_active = False
         
@@ -91,6 +92,10 @@ class SafetyMonitor:
         self.last_velocity = np.array([0.0, 0.0])
         self.last_update = time.time()
         self.watchdog_last_pet = time.time()
+        self.safety_transition_history: List[Dict] = []
+        self.last_transition_time: Optional[float] = None
+        self.last_estop_sim_time = 0.0
+        self.last_estop_response_ms: Optional[float] = None
         
         # Safety violations log
         self.violation_history = []
@@ -128,39 +133,43 @@ class SafetyMonitor:
         min_distance = np.min(distances)
         
         if min_distance < self.constraints.emergency_stop_distance:
-            self.safety_level = SafetyLevel.EMERGENCY
+            self._set_safety_level(SafetyLevel.EMERGENCY)
             self._trigger_failure(FailureMode.COLLISION)
             return SafetyLevel.EMERGENCY
         
         elif min_distance < self.constraints.min_obstacle_distance:
-            self.safety_level = SafetyLevel.WARNING
+            self._set_safety_level(SafetyLevel.WARNING)
             return SafetyLevel.WARNING
         
         elif min_distance < self.constraints.min_obstacle_distance * 1.5:
-            self.safety_level = SafetyLevel.CAUTION
+            self._set_safety_level(SafetyLevel.CAUTION)
             return SafetyLevel.CAUTION
         
-        self.safety_level = SafetyLevel.NOMINAL
+        self._set_safety_level(SafetyLevel.NOMINAL)
         return SafetyLevel.NOMINAL
     
     def check_power_status(self, voltage: float, current: float, temperature: float) -> bool:
         """Monitor power system health"""
         safe = True
+        desired_level = SafetyLevel.NOMINAL
         
         if voltage < self.constraints.min_battery_voltage:
             self._trigger_failure(FailureMode.POWER_LOW)
-            self.safety_level = SafetyLevel.CRITICAL
+            desired_level = SafetyLevel.CRITICAL
             safe = False
         
         if current > self.constraints.max_motor_current:
             self._trigger_failure(FailureMode.MOTOR_STALL)
-            self.safety_level = SafetyLevel.WARNING
+            if desired_level.value < SafetyLevel.WARNING.value:
+                desired_level = SafetyLevel.WARNING
             safe = False
         
         if temperature > self.constraints.max_temperature:
             self._trigger_failure(FailureMode.OVERHEAT)
-            self.safety_level = SafetyLevel.CRITICAL
+            desired_level = SafetyLevel.CRITICAL
             safe = False
+
+        self._set_safety_level(desired_level)
         
         return safe
     
@@ -168,7 +177,7 @@ class SafetyMonitor:
         """Verify robot orientation is stable"""
         if abs(tilt_angle) > self.constraints.max_tilt_angle:
             self._trigger_failure(FailureMode.TILT_EXCESSIVE)
-            self.safety_level = SafetyLevel.CRITICAL
+            self._set_safety_level(SafetyLevel.CRITICAL)
             return False
         return True
     
@@ -181,9 +190,22 @@ class SafetyMonitor:
         elapsed = time.time() - self.watchdog_last_pet
         if elapsed > self.constraints.watchdog_timeout:
             self._trigger_failure(FailureMode.COMMUNICATION_LOSS)
-            self.safety_level = SafetyLevel.EMERGENCY
+            self._set_safety_level(SafetyLevel.EMERGENCY)
             return False
         return True
+
+    def _set_safety_level(self, level: SafetyLevel):
+        """Set safety level and track transitions"""
+        if level != self.safety_level:
+            transition = {
+                'timestamp': time.time(),
+                'from': self.safety_level.name,
+                'to': level.name
+            }
+            self.safety_transition_history.append(transition)
+            self.last_transition_time = transition['timestamp']
+            self.last_safety_level = self.safety_level
+            self.safety_level = level
     
     def enforce_safe_command(self, left_motor: float, right_motor: float, 
                             sensor_distances: np.ndarray = None) -> tuple:
@@ -251,12 +273,15 @@ class SafetyMonitor:
     
     def get_status(self) -> Dict:
         """Get safety system status"""
+        last_transition = self.safety_transition_history[-1] if self.safety_transition_history else None
         return {
             'safety_level': self.safety_level.name,
             'emergency_stop': self.emergency_stop_active,
             'active_failures': [f.value for f in self.active_failures],
             'violations_count': len(self.violation_history),
-            'watchdog_ok': self.check_watchdog()
+            'watchdog_ok': self.check_watchdog(),
+            'safety_transitions': len(self.safety_transition_history),
+            'last_transition': last_transition
         }
     
     def reset_emergency_stop(self):
@@ -264,7 +289,43 @@ class SafetyMonitor:
         logger.info("Emergency stop reset")
         self.emergency_stop_active = False
         self.active_failures = []
-        self.safety_level = SafetyLevel.NOMINAL
+        self._set_safety_level(SafetyLevel.NOMINAL)
+
+    def simulate_emergency_stop_response(self, sensor_distances: Optional[np.ndarray] = None) -> Optional[float]:
+        """Simulate emergency stop response time without persistent side effects"""
+        now = time.time()
+        if now - self.last_estop_sim_time < 1.0:
+            return self.last_estop_response_ms
+
+        self.last_estop_sim_time = now
+        self.pet_watchdog()
+
+        if sensor_distances is None:
+            sensor_distances = np.array([
+                self.constraints.emergency_stop_distance * 0.5,
+                self.constraints.emergency_stop_distance * 0.5,
+                self.constraints.emergency_stop_distance * 0.5
+            ])
+
+        prev_level = self.safety_level
+        prev_estop = self.emergency_stop_active
+        prev_failures = list(self.active_failures)
+        prev_transition_len = len(self.safety_transition_history)
+        prev_last_transition_time = self.last_transition_time
+
+        start = time.time()
+        self.enforce_safe_command(10.0, 10.0, sensor_distances)
+        end = time.time()
+
+        self.safety_level = prev_level
+        self.emergency_stop_active = prev_estop
+        self.active_failures = prev_failures
+        if len(self.safety_transition_history) > prev_transition_len:
+            self.safety_transition_history = self.safety_transition_history[:prev_transition_len]
+            self.last_transition_time = prev_last_transition_time
+
+        self.last_estop_response_ms = (end - start) * 1000.0
+        return self.last_estop_response_ms
 
 
 class FailureRecovery:

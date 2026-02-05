@@ -215,6 +215,8 @@ class RobotBrain:
         self.total_decisions = 0
         self.total_loops = 0
         self.morphogenic_history = []  # Track phase evolution
+        self.loop_durations = deque(maxlen=100)
+        self.start_time = None
         
         # Real-time loop
         self.running = False
@@ -390,6 +392,8 @@ class RobotBrain:
                 
                 t1 = time.time()  # Loop end time
                 self.last_t1 = t1
+
+                self.loop_durations.append(t1 - t0)
                 
                 # Increment loop counter
                 self.total_loops += 1
@@ -427,6 +431,7 @@ class RobotBrain:
     def start(self, sensor_callback, motor_callback, hz=10):
         """Start autonomous operation"""
         if not self.running:
+            self.start_time = time.time()
             self.running = True
             self.brain_thread = threading.Thread(
                 target=self.brain_loop, 
@@ -442,6 +447,15 @@ class RobotBrain:
     
     def get_status(self):
         """Get current brain state"""
+        avg_loop_duration = float(np.mean(self.loop_durations)) if self.loop_durations else 0.0
+        loop_frequency_hz = (1.0 / avg_loop_duration) if avg_loop_duration > 0 else 0.0
+        if self.total_loops > 0 and loop_frequency_hz > 0:
+            throughput_rate = (self.total_actions / self.total_loops) * loop_frequency_hz
+            decision_rate = (self.total_decisions / self.total_loops) * loop_frequency_hz
+        else:
+            elapsed = (time.time() - self.start_time) if self.start_time else 0.0
+            throughput_rate = (self.total_actions / elapsed) if elapsed > 0 else 0.0
+            decision_rate = (self.total_decisions / elapsed) if elapsed > 0 else 0.0
         return {
             'running': self.running,
             'behavior': self.behavior_state,
@@ -451,6 +465,9 @@ class RobotBrain:
             'actions_taken': self.total_actions,
             'decisions_made': self.total_decisions,
             'total_loops': self.total_loops,
+            'loop_frequency_hz': loop_frequency_hz,
+            'throughput_rate': throughput_rate,
+            'decision_rate': decision_rate,
             'last_t0': self.last_t0,
             'last_t_action': self.last_t_action,
             'last_t1': self.last_t1
@@ -471,6 +488,8 @@ class RobotSimulator:
             np.array([-3.0, 8.0]),
             np.array([10.0, -2.0])
         ]
+        self.max_sensor_range = 15.0
+        self.obstacle_radius = 0.5
         
     def get_sensors(self):
         """Simulate distance sensors (front, left, right)"""
@@ -479,14 +498,21 @@ class RobotSimulator:
             direction = self.orientation + np.radians(angle)
             ray = np.array([np.cos(direction), np.sin(direction)])
             
-            # Find nearest obstacle
-            min_dist = 100.0
+            min_dist = self.max_sensor_range
             for obs in self.obstacles:
-                dist = np.linalg.norm(obs - self.position)
-                if dist < min_dist:
-                    min_dist = dist
+                rel = obs - self.position
+                proj = np.dot(rel, ray)
+                if proj <= 0:
+                    continue
+                closest = rel - proj * ray
+                perp = np.linalg.norm(closest)
+                if perp <= self.obstacle_radius:
+                    offset = np.sqrt(max(self.obstacle_radius**2 - perp**2, 0.0))
+                    dist = max(proj - offset, 0.0)
+                    min_dist = min(min_dist, dist)
             
-            sensors.append(min_dist + np.random.normal(0, 0.1))
+            noisy = min_dist + np.random.normal(0, 0.05)
+            sensors.append(float(np.clip(noisy, 0.0, self.max_sensor_range)))
         
         return np.array(sensors)
     

@@ -253,6 +253,14 @@
                         <div class="stat-label">DECISIONS</div>
                         <div class="stat-value" id="decisionsValue">0</div>
                     </div>
+                    <div class="stat">
+                        <div class="stat-label">LOOP FREQ</div>
+                        <div class="stat-value" id="loopFreqValue">0.00 Hz</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">THROUGHPUT</div>
+                        <div class="stat-value" id="throughputValue">0.00 /s</div>
+                    </div>
                 </div>
             </div>
             
@@ -331,6 +339,18 @@
                         <div class="stat-label">FAILURES</div>
                         <div class="stat-value" id="failuresValue">0</div>
                     </div>
+                    <div class="stat">
+                        <div class="stat-label">TRANSITIONS</div>
+                        <div class="stat-value" id="safetyTransitionsValue">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">LAST TRANSITION</div>
+                        <div class="stat-value" id="safetyLastTransitionValue">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">E-STOP RESPONSE</div>
+                        <div class="stat-value" id="estopResponseValue">-</div>
+                    </div>
                 </div>
             </div>
             
@@ -377,6 +397,10 @@
                     <div class="stat">
                         <div class="stat-label">CHAOS→ORDER</div>
                         <div class="stat-value" id="chaosOrderValue">1.00</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">STABILITY</div>
+                        <div class="stat-value" id="kalmanStabilityValue">0.00</div>
                     </div>
                 </div>
             </div>
@@ -497,6 +521,8 @@
                 document.getElementById('coherenceValue').textContent = data.brain.field_coherence.toFixed(2);
                 document.getElementById('phaseValue').textContent = data.brain.morphogenic_phase.toFixed(3);
                 document.getElementById('decisionsValue').textContent = data.brain.decisions_queued;
+                document.getElementById('loopFreqValue').textContent = (data.brain.loop_frequency_hz || 0).toFixed(2) + ' Hz';
+                document.getElementById('throughputValue').textContent = (data.brain.throughput_rate || 0).toFixed(2) + ' /s';
                 
                 // Update position
                 document.getElementById('posXValue').textContent = data.position.x.toFixed(2);
@@ -530,6 +556,20 @@
                     document.getElementById('watchdogValue').textContent = data.safety_metrics.watchdog_ok ? 'OK' : 'TIMEOUT';
                     document.getElementById('estopValue').textContent = data.safety_metrics.emergency_stop ? 'ENGAGED' : 'CLEAR';
                     document.getElementById('failuresValue').textContent = data.safety_metrics.failure_count || 0;
+                    document.getElementById('safetyTransitionsValue').textContent = data.safety_metrics.safety_transitions || 0;
+
+                    const lastTransition = data.safety_metrics.last_transition;
+                    if (lastTransition && lastTransition.from && lastTransition.to) {
+                        document.getElementById('safetyLastTransitionValue').textContent = `${lastTransition.from}→${lastTransition.to}`;
+                    } else {
+                        document.getElementById('safetyLastTransitionValue').textContent = '-';
+                    }
+
+                    const estopResponse = data.safety_metrics.estop_response_ms;
+                    document.getElementById('estopResponseValue').textContent =
+                        (estopResponse !== null && estopResponse !== undefined)
+                            ? estopResponse.toFixed(2) + ' ms'
+                            : '-';
                     
                     // Color code safety level
                     const safetyElem = document.getElementById('safetyLevelValue');
@@ -564,6 +604,9 @@
                     
                     const chaosOrder = data.kalman_metrics.chaos_to_order_ratio || 1.0;
                     document.getElementById('chaosOrderValue').textContent = chaosOrder.toFixed(2);
+
+                    const stabilityScore = data.kalman_metrics.stability_score || 0.0;
+                    document.getElementById('kalmanStabilityValue').textContent = stabilityScore.toFixed(2);
                 }
                 
                 // Update sensors
