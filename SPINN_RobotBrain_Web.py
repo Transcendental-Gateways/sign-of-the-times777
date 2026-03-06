@@ -7,23 +7,32 @@ Real-time control interface for robot brain operations
 """
 
 from flask import Flask, jsonify, request, render_template
-from SPINN_RobotBrain import RobotBrain, RobotSimulator
+from SPINN_RobotBrain import RobotBrain
 from safety_layer import SafetyMonitor, SafetyConstraints
 from lorenz_kalman import LorenzEnhancedKalmanFilter
+from hardware_abstraction import create_hardware_adapter
 import numpy as np
+import os
 import threading
 import time
 
 app = Flask(__name__)
 
-# Global robot brain and simulator
-brain = None
-simulator = None
-safety_monitor = None
-kalman_filter = None
-brain_active = False
-last_perception = None
-last_action = None
+class RuntimeState:
+    """Shared runtime state guarded by a single re-entrant lock."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.brain = None
+        self.hardware = None
+        self.safety_monitor = None
+        self.kalman_filter = None
+        self.brain_active = False
+        self.last_perception = None
+        self.last_action = None
+
+
+runtime = RuntimeState()
 
 @app.route('/')
 def index():
@@ -32,49 +41,104 @@ def index():
 @app.route('/api/robot/init', methods=['POST'])
 def init_robot():
     """Initialize robot brain"""
-    global brain, simulator, safety_monitor, kalman_filter
-    
-    brain = RobotBrain()
-    simulator = RobotSimulator()
-    safety_monitor = SafetyMonitor(SafetyConstraints())
-    kalman_filter = LorenzEnhancedKalmanFilter(state_dim=4, measurement_dim=2)
+    old_brain = None
+    old_hardware = None
+    was_active = False
+    with runtime.lock:
+        old_brain = runtime.brain
+        old_hardware = runtime.hardware
+        was_active = runtime.brain_active
+
+    if old_brain is not None and was_active:
+        old_brain.stop()
+    if old_hardware is not None:
+        old_hardware.close()
+
+    backend = os.getenv("SPINN_HARDWARE_BACKEND", "simulated")
+    serial_port = os.getenv("SPINN_SERIAL_PORT")
+    serial_baudrate = int(os.getenv("SPINN_SERIAL_BAUDRATE", "115200"))
+    serial_timeout = float(os.getenv("SPINN_SERIAL_TIMEOUT", "0.2"))
+    ros2_node_name = os.getenv("SPINN_ROS2_NODE_NAME", "spinn_robot_hardware")
+    ros2_sensor_topic = os.getenv("SPINN_ROS2_SENSOR_TOPIC", "/robot/sensors")
+    ros2_pose_topic = os.getenv("SPINN_ROS2_POSE_TOPIC", "/robot/pose2d")
+    ros2_motor_topic = os.getenv("SPINN_ROS2_MOTOR_TOPIC", "/robot/cmd_motors")
+    ros2_reset_service = os.getenv("SPINN_ROS2_RESET_SERVICE", "/robot/reset")
+    ros2_timeout = float(os.getenv("SPINN_ROS2_TIMEOUT", "0.2"))
+
+    try:
+        adapter_timeout = ros2_timeout if backend.strip().lower() in {"ros2", "ros"} else serial_timeout
+        hardware = create_hardware_adapter(
+            backend,
+            port=serial_port,
+            baudrate=serial_baudrate,
+            timeout=adapter_timeout,
+            node_name=ros2_node_name,
+            sensor_topic=ros2_sensor_topic,
+            pose_topic=ros2_pose_topic,
+            motor_topic=ros2_motor_topic,
+            reset_service=ros2_reset_service,
+        )
+    except Exception as e:
+        return jsonify({'error': f'Failed to initialize hardware backend {backend}: {e}'}), 400
+
+    with runtime.lock:
+        runtime.brain = RobotBrain()
+        runtime.hardware = hardware
+        runtime.safety_monitor = SafetyMonitor(SafetyConstraints())
+        runtime.kalman_filter = LorenzEnhancedKalmanFilter(state_dim=4, measurement_dim=2)
+        runtime.brain_active = False
+        runtime.last_perception = None
+        runtime.last_action = None
     
     return jsonify({
         'status': 'initialized',
-        'message': 'Robot brain with Lorenz-UKF ready'
+        'message': 'Robot brain with Lorenz-UKF ready',
+        'hardware_backend': backend
     })
 
 @app.route('/api/robot/start', methods=['POST'])
 def start_robot():
     """Start autonomous operation with safety monitoring"""
-    global brain, simulator, brain_active, safety_monitor, last_perception, last_action, kalman_filter
-    
+    with runtime.lock:
+        brain = runtime.brain
+        already_active = runtime.brain_active
+
     if brain is None:
         return jsonify({'error': 'Brain not initialized'}), 400
-    
-    if not brain_active:
+
+    if not already_active:
         def safe_sensor_callback():
-            return simulator.get_sensors()
+            with runtime.lock:
+                hardware = runtime.hardware
+                if hardware is None:
+                    return np.array([0.0, 0.0, 0.0])
+            return hardware.get_sensors()
+
+        def on_perception(perception):
+            with runtime.lock:
+                runtime.last_perception = perception
         
         def safe_motor_callback(cmd):
-            global last_perception, last_action, kalman_filter
-            # SNN-optimized Kalman filter update
+            with runtime.lock:
+                hardware = runtime.hardware
+                safety_monitor = runtime.safety_monitor
+                kalman_filter = runtime.kalman_filter
+                last_perception = runtime.last_perception
+
+            if hardware is None:
+                return None
+
             if kalman_filter and last_perception:
-                # Extract spike activity from synaptic traces
                 trace_signals = last_perception.get('trace_signals', [0, 0, 0])
-                spike_rate = np.mean(trace_signals)  # Average spike activity
-                
-                # Predict with spike-driven Lorenz stabilization
+                spike_rate = np.mean(trace_signals)
                 kalman_filter.predict(dt=0.1, spike_input=spike_rate)
-                
-                # Update with position measurement and spike rate
-                measurement = simulator.position[:2]
+                pose = hardware.get_pose()
+                measurement = np.array([pose.x, pose.y])
                 kalman_filter.update(measurement, synaptic_trace=True, spike_rate=spike_rate)
-            
-            # Apply safety layer
+
             if safety_monitor:
                 safety_monitor.pet_watchdog()
-                sensors = simulator.get_sensors()
+                sensors = hardware.get_sensors()
                 safe_left, safe_right = safety_monitor.enforce_safe_command(
                     cmd['left_motor'],
                     cmd['right_motor'],
@@ -82,66 +146,76 @@ def start_robot():
                 )
                 cmd['left_motor'] = safe_left
                 cmd['right_motor'] = safe_right
-            
-            last_action = cmd
-            return simulator.set_motors(cmd)
-        
-        # Override brain perceive to capture metrics
-        original_perceive = brain.perceive
-        def tracked_perceive(sensors):
-            global last_perception
-            result = original_perceive(sensors)
-            last_perception = result
-            return result
-        brain.perceive = tracked_perceive
-        
-        brain.start(
+
+            with runtime.lock:
+                runtime.last_action = dict(cmd)
+
+            return hardware.set_motors(cmd)
+
+        started = brain.start(
             sensor_callback=safe_sensor_callback,
             motor_callback=safe_motor_callback,
-            hz=10
+            hz=10,
+            perception_callback=on_perception
         )
-        brain_active = True
-        
+        with runtime.lock:
+            runtime.brain_active = bool(started)
+
         return jsonify({
-            'status': 'running',
+            'status': 'running' if started else 'already_running',
             'message': 'Robot brain started with Lorenz-UKF and safety monitoring'
         })
-    
+
     return jsonify({'status': 'already_running'})
 
 @app.route('/api/robot/stop', methods=['POST'])
 def stop_robot():
     """Stop autonomous operation"""
-    global brain, brain_active
-    
+    with runtime.lock:
+        brain = runtime.brain
+        brain_active = runtime.brain_active
+
     if brain and brain_active:
         brain.stop()
-        brain_active = False
-        
+        with runtime.lock:
+            runtime.brain_active = False
+
         return jsonify({
             'status': 'stopped',
             'message': 'Robot brain stopped'
         })
-    
+
     return jsonify({'status': 'not_running'})
 
 @app.route('/api/robot/status', methods=['GET'])
 def get_status():
     """Get current robot status with all metrics"""
-    global brain, simulator, brain_active, safety_monitor, last_perception, last_action
-    
+    with runtime.lock:
+        brain = runtime.brain
+        hardware = runtime.hardware
+        brain_active = runtime.brain_active
+        safety_monitor = runtime.safety_monitor
+        last_perception = runtime.last_perception
+        last_action = runtime.last_action
+        kalman_filter = runtime.kalman_filter
+
     if brain is None:
         return jsonify({'error': 'Brain not initialized'}), 400
-    
+
     brain_status = brain.get_status()
-    
+
+    if hardware is None:
+        return jsonify({'error': 'Hardware backend not initialized'}), 400
+
+    pose = hardware.get_pose()
+
     position = {
-        'x': float(simulator.position[0]),
-        'y': float(simulator.position[1]),
-        'orientation': float(np.degrees(simulator.orientation))
+        'x': float(pose.x),
+        'y': float(pose.y),
+        'orientation': float(np.degrees(pose.theta))
     }
     
-    sensors = simulator.get_sensors()
+    sensors = hardware.get_sensors()
     
     # Get latest perception if available
     if brain_active and last_perception:
@@ -167,7 +241,7 @@ def get_status():
             'safety_level': safety_status['safety_level'],
             'motor_left': last_action.get('left_motor', 0.0) if last_action else 0.0,
             'motor_right': last_action.get('right_motor', 0.0) if last_action else 0.0,
-            'velocity': float(np.linalg.norm(simulator.position) / 10.0) if simulator else 0.0,
+            'velocity': float(np.linalg.norm([pose.x, pose.y]) / 10.0),
             'min_obstacle': float(np.min(sensors)),
             'watchdog_ok': safety_status['watchdog_ok'],
             'emergency_stop': safety_status['emergency_stop'],
@@ -244,64 +318,73 @@ def get_status():
 @app.route('/api/robot/manual', methods=['POST'])
 def manual_control():
     """Manual motor control override"""
-    global simulator
-    
+    with runtime.lock:
+        hardware = runtime.hardware
+
     data = request.json
     left = data.get('left', 0)
     right = data.get('right', 0)
-    
-    if simulator:
+
+    if hardware:
         motor_cmd = {'left_motor': left, 'right_motor': right}
-        pos = simulator.set_motors(motor_cmd)
+        pos = hardware.set_motors(motor_cmd)
+        with runtime.lock:
+            runtime.last_action = dict(motor_cmd)
         
         return jsonify({
             'status': 'ok',
             'position': pos
         })
-    
-    return jsonify({'error': 'Simulator not initialized'}), 400
+
+    return jsonify({'error': 'Hardware backend not initialized'}), 400
 
 @app.route('/api/robot/sensors', methods=['GET'])
 def get_sensors():
     """Get raw sensor data"""
-    global simulator
-    
-    if simulator:
-        sensors = simulator.get_sensors()
+    with runtime.lock:
+        hardware = runtime.hardware
+
+    if hardware:
+        sensors = hardware.get_sensors()
         return jsonify({
             'sensors': sensors.tolist(),
             'timestamp': time.time()
         })
-    
-    return jsonify({'error': 'Simulator not initialized'}), 400
+
+    return jsonify({'error': 'Hardware backend not initialized'}), 400
 
 @app.route('/api/robot/behavior', methods=['GET'])
 def get_behavior():
     """Get current behavior library"""
-    global brain
-    
+    with runtime.lock:
+        brain = runtime.brain
+
     if brain:
+        status = brain.get_status()
         return jsonify({
             'current': str(brain.current_behavior) if brain.current_behavior else None,
-            'state': brain.behavior_state,
+            'state': status['behavior'],
             'library_size': len(brain.behavior_library)
         })
-    
+
     return jsonify({'error': 'Brain not initialized'}), 400
 
 @app.route('/api/robot/reset', methods=['POST'])
 def reset_robot():
     """Reset robot to origin"""
-    global simulator, brain
-    
-    if simulator:
-        simulator.position = np.array([0.0, 0.0])
-        simulator.orientation = 0.0
-    
-    if brain:
-        brain.motor_left.reset()
-        brain.motor_right.reset()
-        brain.syntropic_field = np.zeros(100)
+    with runtime.lock:
+        hardware = runtime.hardware
+        brain = runtime.brain
+
+        if hardware:
+            hardware.reset()
+
+        if brain:
+            brain.motor_left.reset()
+            brain.motor_right.reset()
+            brain.syntropic_field = np.zeros(100)
+            runtime.last_action = None
+            runtime.last_perception = None
     
     return jsonify({
         'status': 'reset',

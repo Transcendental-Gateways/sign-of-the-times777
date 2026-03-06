@@ -221,6 +221,10 @@ class RobotBrain:
         # Real-time loop
         self.running = False
         self.brain_thread = None
+        self.loop_hz = 0.0
+        self.loop_period_sec = 0.0
+        self._state_lock = threading.RLock()
+        self._stop_event = threading.Event()
         
         # Timestamp tracking
         self.last_t0 = None
@@ -246,7 +250,8 @@ class RobotBrain:
             # Update syntropic field with sensor harmonics (using decoded traces)
             vibes = np.array([np.sin(omega * np.arange(len(trace_signals)) + phi) 
                              for omega, phi in zip([1, 2, 3], [0, np.pi/2, np.pi])])
-            self.syntropic_field[:len(trace_signals)] = trace_signals * np.mean(vibes, axis=0)[:len(trace_signals)]
+            with self._state_lock:
+                self.syntropic_field[:len(trace_signals)] = trace_signals * np.mean(vibes, axis=0)[:len(trace_signals)]
             
             # Lorenz dynamics for adaptive response (using continuous signals)
             t = np.linspace(0, 1, 10)
@@ -281,10 +286,12 @@ class RobotBrain:
                 logger.warning("Null perception in think()")
                 return {'decision': 'emergency_stop', 'motor_command': {'left_motor': 0, 'right_motor': 0}}
             
-            self.decision_buffer.append(perception)
+            with self._state_lock:
+                self.decision_buffer.append(perception)
             
             # Evolve behavior based on recent perceptions
-            threat_avg = np.mean([p.get('threat_level', 0) for p in self.decision_buffer])
+            with self._state_lock:
+                threat_avg = np.mean([p.get('threat_level', 0) for p in self.decision_buffer])
         except Exception as e:
             logger.error(f"Decision making error: {e}")
             return {'decision': 'emergency_stop', 'motor_command': {'left_motor': 0, 'right_motor': 0}}
@@ -300,23 +307,27 @@ class RobotBrain:
             decision = 'navigate_careful'
             behavior_idx = 2
         
-        self.current_behavior = self.behavior_library[behavior_idx]
+        with self._state_lock:
+            self.current_behavior = self.behavior_library[behavior_idx]
         
         # Apply perennial morphogenic field for temporal coherence with evolving phase
-        self.morphogenic_phase_time += 0.1  # Increment phase time
-        t = np.linspace(self.morphogenic_phase_time, self.morphogenic_phase_time + 1, 20)
+        with self._state_lock:
+            self.morphogenic_phase_time += 0.1  # Increment phase time
+            phase_t0 = self.morphogenic_phase_time
+        t = np.linspace(phase_t0, phase_t0 + 1, 20)
         morph_signal = perennial_morphogenic(t, omega=2)
-        self.morphogenic_memory = morph_signal[:50]
+        with self._state_lock:
+            self.morphogenic_memory = morph_signal[:50]
         
         # Record morphogenic phase for tracking
-        current_phase = float(np.mean(self.morphogenic_memory))
-        if len(self.morphogenic_history) < 100:  # Keep last 100 samples
-            self.morphogenic_history.append(current_phase)
-        else:
-            self.morphogenic_history.pop(0)
-            self.morphogenic_history.append(current_phase)
-        
-        self.total_decisions += 1
+        with self._state_lock:
+            current_phase = float(np.mean(self.morphogenic_memory))
+            if len(self.morphogenic_history) < 100:  # Keep last 100 samples
+                self.morphogenic_history.append(current_phase)
+            else:
+                self.morphogenic_history.pop(0)
+                self.morphogenic_history.append(current_phase)
+            self.total_decisions += 1
         
         return {
             'decision': decision,
@@ -359,52 +370,62 @@ class RobotBrain:
             'timestamp': time.time()
         }
         
-        self.action_history.append(motor_output)
-        self.total_actions += 1
+        with self._state_lock:
+            self.action_history.append(motor_output)
+            self.total_actions += 1
         
         return motor_output
     
-    def brain_loop(self, sensor_callback, motor_callback, hz=10):
-        """Real-time brain processing loop with error recovery"""
-        dt = 1.0 / hz
+    def brain_loop(self, sensor_callback, motor_callback, hz=10, perception_callback=None):
+        """Real-time brain processing loop with cooperative shutdown and stable cadence."""
+        dt = 1.0 / max(float(hz), 1e-6)
         error_count = 0
         max_errors = 10
+        next_tick = time.perf_counter()
         
         print(f"🧠 Brain loop started at {hz}Hz")
         
-        while self.running:
+        while not self._stop_event.is_set():
             try:
                 t0 = time.time()  # Loop start time
-                self.last_t0 = t0
+                with self._state_lock:
+                    self.last_t0 = t0
                 
                 # Perception
                 sensor_data = sensor_callback()
                 perception = self.perceive(sensor_data)
+                if perception_callback is not None:
+                    try:
+                        perception_callback(perception)
+                    except Exception as e:
+                        logger.warning(f"Perception callback error: {e}")
                 
                 # Cognition
                 decision = self.think(perception)
                 
                 # Action
                 t_action = time.time()  # Time right before action
-                self.last_t_action = t_action
+                with self._state_lock:
+                    self.last_t_action = t_action
                 motor_cmd = self.act(decision)
                 motor_callback(motor_cmd)
                 
                 t1 = time.time()  # Loop end time
-                self.last_t1 = t1
-
-                self.loop_durations.append(t1 - t0)
-                
-                # Increment loop counter
-                self.total_loops += 1
+                with self._state_lock:
+                    self.last_t1 = t1
+                    self.loop_durations.append(t1 - t0)
+                    self.total_loops += 1
                 
                 # Reset error count on success
                 error_count = 0
                 
-                # Maintain loop timing
-                elapsed = t1 - t0
-                if elapsed < dt:
-                    time.sleep(dt - elapsed)
+                # Maintain loop timing with drift correction.
+                next_tick += dt
+                sleep_for = next_tick - time.perf_counter()
+                if sleep_for > 0:
+                    self._stop_event.wait(sleep_for)
+                else:
+                    next_tick = time.perf_counter()
                     
             except Exception as e:
                 error_count += 1
@@ -414,7 +435,9 @@ class RobotBrain:
                 if error_count >= max_errors:
                     logger.critical("Too many errors, initiating emergency stop")
                     motor_callback({'left_motor': 0, 'right_motor': 0})
-                    self.running = False
+                    with self._state_lock:
+                        self.running = False
+                    self._stop_event.set()
                     break
                 
                 # Try to continue with safe defaults
@@ -423,54 +446,88 @@ class RobotBrain:
                 except:
                     pass
                 
-                time.sleep(dt)
+                self._stop_event.wait(dt)
                 continue
+        with self._state_lock:
+            self.running = False
         
         print("🛑 Brain loop stopped")
     
-    def start(self, sensor_callback, motor_callback, hz=10):
-        """Start autonomous operation"""
-        if not self.running:
+    def start(self, sensor_callback, motor_callback, hz=10, perception_callback=None):
+        """Start autonomous operation. Returns True if a new loop was started."""
+        with self._state_lock:
+            if self.running:
+                return False
             self.start_time = time.time()
+            self.loop_hz = float(hz)
+            self.loop_period_sec = 1.0 / max(float(hz), 1e-6)
             self.running = True
+            self._stop_event.clear()
             self.brain_thread = threading.Thread(
-                target=self.brain_loop, 
-                args=(sensor_callback, motor_callback, hz)
+                target=self.brain_loop,
+                args=(sensor_callback, motor_callback, hz, perception_callback),
+                name="RobotBrainLoop"
             )
             self.brain_thread.start()
+        return True
     
-    def stop(self):
-        """Stop autonomous operation"""
-        self.running = False
-        if self.brain_thread:
-            self.brain_thread.join()
+    def stop(self, timeout=5.0):
+        """Stop autonomous operation. Returns True if loop is fully stopped."""
+        with self._state_lock:
+            self.running = False
+            thread = self.brain_thread
+        self._stop_event.set()
+
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+
+        with self._state_lock:
+            alive = self.brain_thread.is_alive() if self.brain_thread else False
+            if not alive:
+                self.brain_thread = None
+        return not alive
     
     def get_status(self):
         """Get current brain state"""
-        avg_loop_duration = float(np.mean(self.loop_durations)) if self.loop_durations else 0.0
+        with self._state_lock:
+            loop_durations = list(self.loop_durations)
+            total_loops = self.total_loops
+            total_actions = self.total_actions
+            total_decisions = self.total_decisions
+            start_time = self.start_time
+            running = self.running
+            behavior_state = self.behavior_state
+            field_coherence = float(np.var(self.syntropic_field))
+            morphogenic_phase = float(np.mean(self.morphogenic_memory))
+            decisions_queued = len(self.decision_buffer)
+            last_t0 = self.last_t0
+            last_t_action = self.last_t_action
+            last_t1 = self.last_t1
+
+        avg_loop_duration = float(np.mean(loop_durations)) if loop_durations else 0.0
         loop_frequency_hz = (1.0 / avg_loop_duration) if avg_loop_duration > 0 else 0.0
-        if self.total_loops > 0 and loop_frequency_hz > 0:
-            throughput_rate = (self.total_actions / self.total_loops) * loop_frequency_hz
-            decision_rate = (self.total_decisions / self.total_loops) * loop_frequency_hz
+        if total_loops > 0 and loop_frequency_hz > 0:
+            throughput_rate = (total_actions / total_loops) * loop_frequency_hz
+            decision_rate = (total_decisions / total_loops) * loop_frequency_hz
         else:
-            elapsed = (time.time() - self.start_time) if self.start_time else 0.0
-            throughput_rate = (self.total_actions / elapsed) if elapsed > 0 else 0.0
-            decision_rate = (self.total_decisions / elapsed) if elapsed > 0 else 0.0
+            elapsed = (time.time() - start_time) if start_time else 0.0
+            throughput_rate = (total_actions / elapsed) if elapsed > 0 else 0.0
+            decision_rate = (total_decisions / elapsed) if elapsed > 0 else 0.0
         return {
-            'running': self.running,
-            'behavior': self.behavior_state,
-            'field_coherence': float(np.var(self.syntropic_field)),
-            'morphogenic_phase': float(np.mean(self.morphogenic_memory)),
-            'decisions_queued': len(self.decision_buffer),
-            'actions_taken': self.total_actions,
-            'decisions_made': self.total_decisions,
-            'total_loops': self.total_loops,
+            'running': running,
+            'behavior': behavior_state,
+            'field_coherence': field_coherence,
+            'morphogenic_phase': morphogenic_phase,
+            'decisions_queued': decisions_queued,
+            'actions_taken': total_actions,
+            'decisions_made': total_decisions,
+            'total_loops': total_loops,
             'loop_frequency_hz': loop_frequency_hz,
             'throughput_rate': throughput_rate,
             'decision_rate': decision_rate,
-            'last_t0': self.last_t0,
-            'last_t_action': self.last_t_action,
-            'last_t1': self.last_t1
+            'last_t0': last_t0,
+            'last_t_action': last_t_action,
+            'last_t1': last_t1
         }
 
 # ============================================================================

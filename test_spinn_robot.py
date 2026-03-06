@@ -3,6 +3,7 @@ SPINN Robot Brain - Comprehensive Test Suite
 Continuous validation for production readiness
 """
 
+import json
 import unittest
 import numpy as np
 import time
@@ -11,6 +12,12 @@ from safety_layer import (SafetyMonitor, SafetyConstraints, FailureRecovery,
 from lorenz_kalman import (LorenzEnhancedKalmanFilter, MultiSensorFusion, 
                            SensorReading)
 from SPINN_RobotBrain import RobotBrain, RobotSimulator
+from hardware_abstraction import (
+    SimulatedRobotHardware,
+    SerialJsonRobotHardware,
+    Ros2RobotHardware,
+    create_hardware_adapter,
+)
 
 
 class TestSafetyLayer(unittest.TestCase):
@@ -286,6 +293,151 @@ class TestPerformance(unittest.TestCase):
         self.assertGreater(hz, 100.0)
 
 
+class TestHardwareAbstraction(unittest.TestCase):
+    """Hardware abstraction conformance tests"""
+
+    def test_simulated_hardware_pose_and_reset(self):
+        hw = SimulatedRobotHardware()
+
+        pose0 = hw.get_pose()
+        self.assertAlmostEqual(pose0.x, 0.0, delta=1e-6)
+        self.assertAlmostEqual(pose0.y, 0.0, delta=1e-6)
+
+        hw.set_motors({'left_motor': 50, 'right_motor': 50})
+        pose1 = hw.get_pose()
+        self.assertNotEqual((pose1.x, pose1.y), (pose0.x, pose0.y))
+
+        hw.reset()
+        pose2 = hw.get_pose()
+        self.assertAlmostEqual(pose2.x, 0.0, delta=1e-6)
+        self.assertAlmostEqual(pose2.y, 0.0, delta=1e-6)
+
+    def test_simulated_hardware_sensors_shape(self):
+        hw = SimulatedRobotHardware()
+        sensors = hw.get_sensors()
+
+        self.assertEqual(sensors.shape, (3,))
+        self.assertTrue(np.all(sensors >= 0.0))
+
+    def test_serial_json_hardware_adapter(self):
+        class FakeSerial:
+            def __init__(self):
+                self._next_line = b''
+
+            def write(self, data):
+                req = json.loads(data.decode('utf-8').strip())
+                cmd = req.get('cmd')
+
+                if cmd == 'get_sensors':
+                    resp = {'status': 'ok', 'sensors': [1.0, 2.0, 3.0]}
+                elif cmd == 'set_motors':
+                    left = req.get('left_motor', 0.0)
+                    right = req.get('right_motor', 0.0)
+                    resp = {
+                        'status': 'ok',
+                        'pose': {'x': float(left) * 0.01, 'y': float(right) * 0.01, 'theta': 0.1}
+                    }
+                elif cmd == 'get_pose':
+                    resp = {'status': 'ok', 'pose': {'x': 0.5, 'y': -0.1, 'theta': 0.2}}
+                elif cmd == 'reset':
+                    resp = {'status': 'ok'}
+                else:
+                    resp = {'status': 'error', 'error': 'unknown_cmd'}
+
+                self._next_line = (json.dumps(resp) + '\n').encode('utf-8')
+
+            def flush(self):
+                return
+
+            def readline(self):
+                line = self._next_line
+                self._next_line = b''
+                return line
+
+            def close(self):
+                return
+
+        fake_serial = FakeSerial()
+        hw = SerialJsonRobotHardware(serial_conn=fake_serial)
+
+        sensors = hw.get_sensors()
+        self.assertEqual(sensors.shape, (3,))
+        self.assertAlmostEqual(float(np.sum(sensors)), 6.0, delta=1e-6)
+
+        pose_from_cmd = hw.set_motors({'left_motor': 50, 'right_motor': 10})
+        self.assertIn('x', pose_from_cmd)
+        self.assertIn('y', pose_from_cmd)
+
+        pose = hw.get_pose()
+        self.assertAlmostEqual(pose.x, 0.5, delta=1e-6)
+        self.assertAlmostEqual(pose.theta, 0.2, delta=1e-6)
+
+        hw.reset()
+        hw.close()
+
+    def test_ros2_hardware_adapter_with_fake_client(self):
+        class FakeRosClient:
+            def __init__(self):
+                self._pose = type("Pose", (), {"x": 0.0, "y": 0.0, "theta": 0.0})()
+
+            def get_sensors(self):
+                return np.array([0.2, 0.4, 0.6])
+
+            def set_motors(self, motor_cmd):
+                self._pose.x += float(motor_cmd.get('left_motor', 0.0)) * 0.001
+                self._pose.y += float(motor_cmd.get('right_motor', 0.0)) * 0.001
+                return {'x': self._pose.x, 'y': self._pose.y, 'theta': self._pose.theta}
+
+            def get_pose(self):
+                return self._pose
+
+            def reset(self):
+                self._pose.x = 0.0
+                self._pose.y = 0.0
+                self._pose.theta = 0.0
+
+            def close(self):
+                return
+
+        fake = FakeRosClient()
+        hw = Ros2RobotHardware(ros_client=fake)
+
+        sensors = hw.get_sensors()
+        self.assertEqual(sensors.shape, (3,))
+
+        hw.set_motors({'left_motor': 100, 'right_motor': 50})
+        pose = hw.get_pose()
+        self.assertGreater(pose.x, 0.0)
+        self.assertGreater(pose.y, 0.0)
+
+        hw.reset()
+        pose2 = hw.get_pose()
+        self.assertAlmostEqual(pose2.x, 0.0, delta=1e-6)
+        self.assertAlmostEqual(pose2.y, 0.0, delta=1e-6)
+        hw.close()
+
+    def test_factory_ros2_backend_with_injected_client(self):
+        class FakeRosClient:
+            def get_sensors(self):
+                return np.array([1.0, 1.0, 1.0])
+
+            def set_motors(self, motor_cmd):
+                return {'x': 0.0, 'y': 0.0, 'theta': 0.0}
+
+            def get_pose(self):
+                return type("Pose", (), {"x": 0.0, "y": 0.0, "theta": 0.0})()
+
+            def reset(self):
+                return
+
+            def close(self):
+                return
+
+        adapter = create_hardware_adapter('ros2', ros_client=FakeRosClient())
+        self.assertTrue(hasattr(adapter, 'get_sensors'))
+        self.assertEqual(adapter.get_sensors().shape, (3,))
+
+
 def run_continuous_validation():
     """Run full test suite with coverage reporting"""
     print("=" * 60)
@@ -301,6 +453,7 @@ def run_continuous_validation():
     suite.addTests(loader.loadTestsFromTestCase(TestRobotBrain))
     suite.addTests(loader.loadTestsFromTestCase(TestIntegration))
     suite.addTests(loader.loadTestsFromTestCase(TestPerformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestHardwareAbstraction))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
