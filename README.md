@@ -42,6 +42,9 @@ python -m unittest test_spinn_robot
 
 # Start web interface
 python SPINN_RobotBrain_Web.py
+
+# Build C++ acceleration module (spinn_core.so)
+./scripts/build_spinn_core.sh
 ```
 
 ## Packaging

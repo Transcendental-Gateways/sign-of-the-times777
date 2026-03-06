@@ -92,8 +92,21 @@ struct PIDController {
 static PyObject* batch_lorenz_update(PyObject* self, PyObject* args) {
     PyObject* states_list;
     double dt;
+    double sigma = 10.0;
+    double beta = 8.0 / 3.0;
+    double rho = 28.0;
     
-    if (!PyArg_ParseTuple(args, "Od", &states_list, &dt)) {
+    if (!PyArg_ParseTuple(args, "Od|ddd", &states_list, &dt, &sigma, &beta, &rho)) {
+        return NULL;
+    }
+
+    if (!PyList_Check(states_list)) {
+        PyErr_SetString(PyExc_TypeError, "states must be a list of (x, y, z) tuples");
+        return NULL;
+    }
+
+    if (dt <= 0.0) {
+        PyErr_SetString(PyExc_ValueError, "dt must be > 0");
         return NULL;
     }
     
@@ -102,19 +115,54 @@ static PyObject* batch_lorenz_update(PyObject* self, PyObject* args) {
     
     for (Py_ssize_t i = 0; i < n; i++) {
         PyObject* state_tuple = PyList_GetItem(states_list, i);
+
+        if (!PyTuple_Check(state_tuple) || PyTuple_Size(state_tuple) != 3) {
+            Py_DECREF(result);
+            PyErr_SetString(PyExc_TypeError, "each state must be a tuple (x, y, z)");
+            return NULL;
+        }
         
         LorenzState state;
         state.x = PyFloat_AsDouble(PyTuple_GetItem(state_tuple, 0));
         state.y = PyFloat_AsDouble(PyTuple_GetItem(state_tuple, 1));
         state.z = PyFloat_AsDouble(PyTuple_GetItem(state_tuple, 2));
+
+        if (PyErr_Occurred()) {
+            Py_DECREF(result);
+            return NULL;
+        }
         
-        lorenz_rk4(state, dt);
+        lorenz_rk4(state, dt, sigma, beta, rho);
         
         PyObject* new_tuple = Py_BuildValue("(ddd)", state.x, state.y, state.z);
         PyList_SetItem(result, i, new_tuple);
     }
     
     return result;
+}
+
+// Single-state Lorenz processing with full parameter control
+static PyObject* lorenz_step(PyObject* self, PyObject* args) {
+    double x;
+    double y;
+    double z;
+    double dt;
+    double sigma = 10.0;
+    double beta = 8.0 / 3.0;
+    double rho = 28.0;
+
+    if (!PyArg_ParseTuple(args, "(ddd)d|ddd", &x, &y, &z, &dt, &sigma, &beta, &rho)) {
+        return NULL;
+    }
+
+    if (dt <= 0.0) {
+        PyErr_SetString(PyExc_ValueError, "dt must be > 0");
+        return NULL;
+    }
+
+    LorenzState state{x, y, z};
+    lorenz_rk4(state, dt, sigma, beta, rho);
+    return Py_BuildValue("(ddd)", state.x, state.y, state.z);
 }
 
 // Lorenz-Aware Unscented Kalman Filter for SPINN
@@ -299,7 +347,9 @@ static PyObject* fast_kalman_predict(PyObject* self, PyObject* args) {
 // Method definitions
 static PyMethodDef SpinnCoreMethods[] = {
     {"batch_lorenz_update", batch_lorenz_update, METH_VARARGS,
-     "Fast batch Lorenz attractor updates"},
+     "Fast batch Lorenz attractor updates: batch_lorenz_update(states, dt, sigma=10, beta=8/3, rho=28)"},
+    {"lorenz_step", lorenz_step, METH_VARARGS,
+     "Fast single Lorenz RK4 step: lorenz_step((x, y, z), dt, sigma=10, beta=8/3, rho=28)"},
     {"fast_kalman_predict", fast_kalman_predict, METH_VARARGS,
      "Optimized Kalman filter prediction step"},
     {NULL, NULL, 0, NULL}

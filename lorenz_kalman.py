@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from typing import Tuple, List
 import time
 
+try:
+    import spinn_core as _spinn_core
+except Exception:
+    _spinn_core = None
+
 
 def lorenz_system(state, t, sigma=10, beta=8/3, rho=28):
     """Lorenz chaotic attractor"""
@@ -113,13 +118,24 @@ class LorenzEnhancedKalmanFilter:
         self.current_rho = self.base_rho * (1.0 - 0.5 * np.tanh(spike_stabilization))
         
         # Update Lorenz attractor with adaptive dynamics
-        t = np.array([0, dt])
         try:
-            lorenz_trajectory = odeint(
-                lambda state, t: lorenz_system(state, t, rho=self.current_rho),
-                self.lorenz_state, t, rtol=1e-3, atol=1e-6
-            )
-            self.lorenz_state = lorenz_trajectory[-1].tolist()
+            if _spinn_core is not None and hasattr(_spinn_core, "lorenz_step"):
+                self.lorenz_state = list(
+                    _spinn_core.lorenz_step(
+                        tuple(self.lorenz_state),
+                        float(dt),
+                        10.0,
+                        8 / 3,
+                        float(self.current_rho),
+                    )
+                )
+            else:
+                t = np.array([0, dt])
+                lorenz_trajectory = odeint(
+                    lambda state, t: lorenz_system(state, t, rho=self.current_rho),
+                    self.lorenz_state, t, rtol=1e-3, atol=1e-6
+                )
+                self.lorenz_state = lorenz_trajectory[-1].tolist()
         except Exception as e:
             # Fallback: maintain current state with small perturbation
             self.lorenz_state = [s * 0.99 for s in self.lorenz_state]

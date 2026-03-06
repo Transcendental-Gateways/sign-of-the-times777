@@ -18,8 +18,28 @@ import threading
 import time
 import logging
 
+try:
+    import spinn_core as _spinn_core
+except Exception:
+    _spinn_core = None
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _lorenz_trajectory_last_state(initial_state, t_points):
+    """Return final Lorenz state, using C++ acceleration when available."""
+    if _spinn_core is None:
+        return odeint(lorenz_system, initial_state, t_points, rtol=1e-3, atol=1e-6)[-1]
+
+    state = tuple(float(v) for v in initial_state)
+    try:
+        # Reproduce multi-step integration across the same time grid.
+        for dt in np.diff(t_points):
+            state = _spinn_core.batch_lorenz_update([state], float(dt))[0]
+        return np.array(state, dtype=float)
+    except Exception:
+        return odeint(lorenz_system, initial_state, t_points, rtol=1e-3, atol=1e-6)[-1]
 
 # ============================================================================
 # CORE SNN MODULES
@@ -256,7 +276,7 @@ class RobotBrain:
             # Lorenz dynamics for adaptive response (using continuous signals)
             t = np.linspace(0, 1, 10)
             initial = [perception['confidence'], perception['cluster'], np.mean(trace_signals)]
-            chaos = odeint(lorenz_system, initial, t, rtol=1e-3, atol=1e-6)
+            chaos_last = _lorenz_trajectory_last_state(initial, t)
         except Exception as e:
             logger.error(f"Perception error: {e}")
             return self._get_default_perception()
@@ -264,7 +284,7 @@ class RobotBrain:
         return {
             'perception': perception,
             'field_energy': float(np.mean(self.syntropic_field**2)),
-            'chaos_trajectory': chaos[-1].tolist(),
+            'chaos_trajectory': chaos_last.tolist(),
             'threat_level': float(np.clip(perception['cluster'] / 5.0, 0, 1)),
             'trace_signals': trace_signals.tolist()  # Smooth continuous signals
         }
